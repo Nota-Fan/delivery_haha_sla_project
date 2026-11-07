@@ -4,7 +4,17 @@ CREATE TABLE haha_couriers(
     fio VARCHAR(255) NOT NULL,
     phone VARCHAR(20) NOT NULL,
     area VARCHAR(100) NOT NULL,
-    transport_type VARCHAR(50) NOT NULL,
+    transport_type VARCHAR(50) NOT NULL CHECK(
+          transport_type IN (
+            'Пешком',
+            'На электросамокате',
+            'На велосипеде',
+            'На мопеде',
+            'На мотоцикле'
+            'На машине',
+            'На электровелосипед'
+          )
+    ),
     sla_rating NUMERIC(5,2) DEFAULT 100.00 NOT NULL
 );
 CREATE TABLE haha_cancel_reasons(
@@ -70,3 +80,47 @@ CREATE TRIGGER trg_haha_after_status_insert
 AFTER INSERT ON haha_order_statuses
 FOR EACH ROW
 EXECUTE FUNCTION fn_haha_sync_order_status();
+
+CREATE OR REPLACE FUNCTION fn_haha_calculate_sla_deadline()
+RETURNS TRIGGER AS $$
+Declare
+   vid_transporta VARCHAR(50)
+   v_minutes_per_km
+   result_delievery_time
+BEGIN
+  IF NEW.courier_id IS NOT NULL
+     SELECT transport_type into vid_transporta
+     FROM haha_couriers
+     WHERE id=New.courier_id;
+  ELSE 
+   vid_transporta:='Пешком';
+   END IF;
+
+   IF vid_transporta='Пешком' THEN
+   v_minutes_per_km:=15;
+   ELSEIF vid_transporta='На электросамокате' THEN
+   v_minutes_per_km:=7;
+   ELSEIF vid_transporta='На велосипеде' THEN
+   v_minutes_per_km:=8;
+   ELSEIF vid_transporta='На электровелосипеде' THEN
+   v_minutes_per_km:=5;
+   ELSEIF vid_transporta IN ('На мопеде', 'На мотоцикле') THEN
+   v_minutes_per_km:=4;
+   ELSEIF vid_transporta='На машине' THEN
+   v_minutes_per_km:=3;
+   ELSE
+   v_minutes_per_km=10;
+END IF;
+result_delievery_time:=NEW.distance*v_minutes_per_km;
+IF result_delievery_time<20 THEN
+   result_delievery_time:=20;
+END IF;
+  NEW.planned_to:= NEW.planned_from + (result_delievery_time || 'minutes')::INTERVAL;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql; 
+
+CREATE TRIGGER trg_haha_sla_control
+BEFORE INSERT ON haha_orders
+FOR EACH ROW
+EXECUTE FUNCTION fn_haha_calculate_sla_deadline();
