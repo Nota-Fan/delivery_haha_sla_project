@@ -4,12 +4,23 @@ CREATE TABLE haha_couriers(
     fio VARCHAR(255) NOT NULL,
     phone VARCHAR(20) NOT NULL,
     area VARCHAR(100) NOT NULL,
-    transport_type VARCHAR(50) NOT NULL,
+    transport_type VARCHAR(50) NOT NULL CHECK(
+          transport_type IN (
+            'Пешком',
+            'На электросамокате',
+            'На велосипеде',
+            'На мопеде',
+            'На мотоцикле'
+            'На машине',
+            'На электровелосипед'
+          )
+    ),
     sla_rating NUMERIC(5,2) DEFAULT 100.00 NOT NULL
 );
 CREATE TABLE haha_cancel_reasons(
     id SERIAL PRIMARY KEY,
-    kakova_prichina VARCHAR(255) UNIQUE NOT NULL
+    kakova_prichina VARCHAR(255) UNIQUE NOT NULL,
+    is_courier_fault BOOLEAN DEFAULT FALSE NOT NULL
 );
 CREATE TABLE haha_orders(
     id SERIAL PRIMARY KEY,
@@ -19,7 +30,7 @@ CREATE TABLE haha_orders(
     area VARCHAR(100) NOT NULL,
     planned_from TIMESTAMP NOT NULL,
     planned_to TIMESTAMP NOT NULL,
-    delievered_actually_at TIMESTAMP,
+    delivered_actually_at TIMESTAMP, 
     status VARCHAR(50) DEFAULT 'Новый' NOT NULL, 
     cancel_reason INT REFERENCES haha_cancel_reasons(id)
     );
@@ -33,16 +44,83 @@ CREATE TABLE haha_order_statuses(
     );
 CREATE OR REPLACE FUNCTION fn_haha_penalty_sla()
 RETURNS TRIGGER AS $$
+Declare
+   v_is_fault BOOLEAN;
 BEGIN 
-    IF NEW.status_actual ='Отменен' AND NEW.cancel_reason=2 THEN
+    IF NEW.status_actual ='Отменен' AND NEW.cancel_reason IS NOT NULL THEN
+    SELECT is_courier_fault INTO v_is_fault 
+    FROM haha_cancel_reasons
+    WHERE id=NEW.cancel_reason;
+    IF v_is_fault = TRUE AND NEW.courier_id IS NOT NULL THEN
     UPDATE haha_couriers
     SET sla_rating = GREATEST(0.00, sla_rating-10.00)
     WHERE Id= NEW.courier_id;
     END IF;
+    END IF;
     RETURN NEW;
 END;
-$$ LANGAUGE plgsql;
+$$ LANGUAGE plpgsql; 
 CREATE TRIGGER trg_haha_after_cancel
 AFTER INSERT ON haha_order_statuses
 FOR EACH ROW
-EXECUTION FUNCTION fn_haha_penalty_sla();
+EXECUTE FUNCTION fn_haha_penalty_sla(); 
+
+CREATE OR REPLACE FUNCTION fn_haha_sync_order_status()
+RETURNS TRIGGER AS $$
+BEGIN 
+    UPDATE haha_orders
+    SET status=NEW.status_actual,
+      cancel_reason=NEW.cancel_reason
+    WHERE id=New.order_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_haha_after_status_insert
+AFTER INSERT ON haha_order_statuses
+FOR EACH ROW
+EXECUTE FUNCTION fn_haha_sync_order_status();
+
+CREATE OR REPLACE FUNCTION fn_haha_calculate_sla_deadline()
+RETURNS TRIGGER AS $$
+Declare
+   vid_transporta VARCHAR(50)
+   v_minutes_per_km
+   result_delievery_time
+BEGIN
+  IF NEW.courier_id IS NOT NULL
+     SELECT transport_type into vid_transporta
+     FROM haha_couriers
+     WHERE id=New.courier_id;
+  ELSE 
+   vid_transporta:='Пешком';
+   END IF;
+
+   IF vid_transporta='Пешком' THEN
+   v_minutes_per_km:=15;
+   ELSEIF vid_transporta='На электросамокате' THEN
+   v_minutes_per_km:=7;
+   ELSEIF vid_transporta='На велосипеде' THEN
+   v_minutes_per_km:=8;
+   ELSEIF vid_transporta='На электровелосипеде' THEN
+   v_minutes_per_km:=5;
+   ELSEIF vid_transporta IN ('На мопеде', 'На мотоцикле') THEN
+   v_minutes_per_km:=4;
+   ELSEIF vid_transporta='На машине' THEN
+   v_minutes_per_km:=3;
+   ELSE
+   v_minutes_per_km=10;
+END IF;
+result_delievery_time:=NEW.distance*v_minutes_per_km;
+IF result_delievery_time<20 THEN
+   result_delievery_time:=20;
+END IF;
+  NEW.planned_to:= NEW.planned_from + (result_delievery_time || 'minutes')::INTERVAL;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql; 
+
+CREATE TRIGGER trg_haha_sla_control
+BEFORE INSERT ON haha_orders
+FOR EACH ROW
+EXECUTE FUNCTION fn_haha_calculate_sla_deadline();
