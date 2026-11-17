@@ -142,19 +142,27 @@ IF TG_OP='INSERT' AND New.area IS NOT NULL THEN
  SET n_couriers_in_area=n_couriers_in_area+1
  where id = New.area;
 END IF; 
-ELSE IF TG_OP='DELETE' AND Old.area IS NOT NULL  THEN
+IF TG_OP='DELETE' AND Old.area IS NOT NULL  THEN
 Update haha_areas
 SET n_couriers_in_area=GREATEST(n_couriers_in_area-1,0)
 where id= Old.area;
 END IF;
-ELSE IF TG_OP='UPDATE' and New.area IS DISTINCT FROM Old.area THEN
+IF TG_OP='UPDATE' and New.area IS DISTINCT FROM Old.area THEN
+ IF New.area IS NOT NULL THEN
  Update haha_areas
  SET n_couriers_in_area=n_couriers_in_area+1
  where id = New.area;
+ END IF;
+IF Old.area IS NOT NULL THEN
  Update haha_areas
- SET n_couriers_in_area=GREATEST(n_couriers_in_area-1;,0)
+ SET n_couriers_in_area=GREATEST(n_couriers_in_area-1,0)
  where id= Old.area;
+ END IF;
  END IF;
 RETURN NULL;
 END;
 $$ LANGUAGE plpgsql; 
+CREATE TRIGGER haha_n_couriers_in_area_detect
+AFTER INSERT OR UPDATE OR DELETE ON haha_couriers
+FOR EACH ROW
+EXECUTE FUNCTION haha_area_number_of_couriers(); 
